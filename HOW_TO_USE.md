@@ -57,24 +57,47 @@ python tracker.py --video path/to/match.mp4 --start 1850 --duration 30
 
 ### Headless (RunPod / SSH, no display)
 
-No GUI required. Provide the player location at the `--start` frame using either a bounding box or a click point.
+RunPod has no mouse/GUI, so you cannot press `S` to draw a box. Use **`--list-players`** + **`--pick N`** instead (easiest), or paste a **`--bbox`** from local testing.
+
+**Step 1 — list all players at the start frame:**
 
 ```bash
-# Option A: exact bounding box (x,y,width,height)
-python tracker.py --headless --video path/to/match.mp4 --start 1850 --duration 30 \
-  --bbox 820,340,55,120 --jersey 10 --team red
+python tracker.py --headless --video /workspace/match1.mp4 --start 0 --list-players
+```
 
-# Option B: auto-pick player nearest frame center (best for most videos)
-python tracker.py --headless --video path/to/match.mp4 --start 0 --duration 30 \
-  --jersey 10 --team red
+This saves `output/players_0s.jpg` with numbered green boxes. Download that image via RunPod's file browser or:
 
-# Option C: pick nearest player to a pixel (must match your video resolution!)
-python tracker.py --headless --video path/to/match.mp4 --start 0 --duration 30 \
-  --pos 960,540 --jersey 10 --team red
+```bash
+# from your Mac
+scp root@<runpod-ip>:/workspace/athlete_player_highlight_tool/output/players_0s.jpg .
+```
 
-# If no players detected — lower threshold, skip intro, save debug frames
-python tracker.py --headless --video path/to/match.mp4 --start 0 --duration 5 \
-  --yolo-conf 0.05 --scan-seconds 30 --debug --jersey 10 --team red
+**Step 2 — run with your player's number:**
+
+```bash
+python tracker.py --headless \
+  --video /workspace/match1.mp4 \
+  --start 0 \
+  --duration 5 \
+  --pick 7 \
+  --highlight-mode tracked \
+  --jersey 7 \
+  --team red
+```
+
+**Alternative — copy bbox from local interactive mode:**
+
+Run locally (with display), press `S` to draw a box — the terminal prints:
+
+```
+RunPod copy-paste: --bbox 820,340,55,120
+```
+
+Paste that into your RunPod command:
+
+```bash
+python tracker.py --headless --video /workspace/match1.mp4 --start 0 \
+  --bbox 820,340,55,120 --highlight-mode tracked --jersey 7 --team red
 ```
 
 | Argument | Default | Description |
@@ -84,7 +107,9 @@ python tracker.py --headless --video path/to/match.mp4 --start 0 --duration 5 \
 | `--duration` | `30` | How many minutes to process |
 | `--device` | `cuda` | `cuda` or `cpu` |
 | `--headless` | off | Run without OpenCV window (for cloud/SSH) |
-| `--bbox` | — | Initial player box as `x,y,w,h` at `--start` frame (headless) |
+| `--bbox` | — | Exact player box `x,y,w,h` at `--start` frame (headless) |
+| `--pick` | — | Track player #N from `--list-players` (headless, recommended) |
+| `--list-players` | off | Save numbered player image and exit (RunPod picker) |
 | `--pos` | — | Pick nearest YOLO player to `x,y` at `--start` frame (headless) |
 | `--jersey` | — | Jersey number (skips interactive prompt) |
 | `--team` | — | Team color (skips interactive prompt) |

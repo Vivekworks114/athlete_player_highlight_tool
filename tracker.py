@@ -77,6 +77,10 @@ parser.add_argument("--debug", action="store_true",
 parser.add_argument("--highlight-mode", choices=["ball", "tracked", "both"],
                     default="both",
                     help="ball=touches only, tracked=while following player, both=either (default)")
+parser.add_argument("--list-players", action="store_true",
+                    help="Save numbered player image at --start and exit (pick player for RunPod)")
+parser.add_argument("--pick", type=int, metavar="N",
+                    help="Headless: track player #N from --list-players")
 args = parser.parse_args()
 
 HEADLESS = args.headless
@@ -99,8 +103,14 @@ def parse_bbox(s):
         parser.error("--bbox must be four integers: x,y,w,h (w and h > 0)")
     return tuple(parts)
 
-if not HEADLESS and (args.bbox or args.pos):
-    parser.error("--bbox and --pos are only valid with --headless")
+if not HEADLESS and (args.bbox or args.pos or args.pick is not None):
+    parser.error("--bbox, --pos, and --pick are only valid with --headless")
+if args.pick is not None and args.pick < 1:
+    parser.error("--pick must be >= 1")
+if sum([bool(args.bbox), bool(args.pos), args.pick is not None]) > 1:
+    parser.error("Use only one of --bbox, --pos, or --pick")
+if args.list_players and not HEADLESS:
+    parser.error("--list-players requires --headless")
 
 DEBUG = args.debug
 HIGHLIGHT_MODE = args.highlight_mode
@@ -498,6 +508,20 @@ def save_debug_frame(frame, dets, path, point=None):
     cv2.imwrite(str(path), dbg)
     print(f"  Debug frame saved: {path}")
 
+def list_players_sorted(frame):
+    dets, _ = detect_players_multi_conf(frame)
+    dets.sort(key=lambda d: (d[1] + d[3] // 2, d[0] + d[2] // 2))
+    return dets
+
+def draw_numbered_players(frame, dets):
+    img = frame.copy()
+    for i, d in enumerate(dets, 1):
+        x, y, w, h = d
+        cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        cv2.putText(img, str(i), (x, max(y - 8, 24)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+    return img
+
 # ── Video setup ───────────────────────────────────────────────────────────────
 cap = cv2.VideoCapture(VIDEO_PATH)
 if not cap.isOpened():
@@ -540,6 +564,29 @@ def seek_video(seconds):
         return ret, frame
     cap.set(cv2.CAP_PROP_POS_MSEC, seconds * 1000)
     return cap.read()
+
+if args.list_players:
+    output_dir = _DIR / "output"
+    output_dir.mkdir(exist_ok=True)
+    ret, frame = seek_video(START_SEC)
+    if not ret:
+        print(f"ERROR: Cannot read frame at {START_SEC}s")
+        sys.exit(1)
+    dets = list_players_sorted(frame)
+    img_path = output_dir / f"players_{START_SEC}s.jpg"
+    cv2.imwrite(str(img_path), draw_numbered_players(frame, dets))
+    h, w = frame.shape[:2]
+    print(f"\nFound {len(dets)} player(s) at {_fmt_time(START_SEC)} [{w}x{h}]")
+    print(f"Saved: {img_path}")
+    print("Download that image (RunPod file browser or scp), find your player number.\n")
+    for i, d in enumerate(dets, 1):
+        print(f"  #{i}: bbox={d[0]},{d[1]},{d[2]},{d[3]}")
+    print(f"\nThen run:")
+    print(f"  python tracker.py --headless --video {VIDEO_PATH} --start {START_SEC} \\")
+    print(f"    --pick 3 --duration 5 --highlight-mode tracked --jersey 7 --team red")
+    print(f"  (replace 3 with your player number)\n")
+    cap.release()
+    sys.exit(0)
 
 cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
@@ -647,6 +694,24 @@ if HEADLESS:
         h, w = seed_frame.shape[:2]
         if DEBUG:
             save_debug_frame(seed_frame, [init_bb], output_dir / "debug_bbox.jpg")
+    elif args.pick is not None:
+        ret, seed_frame = seek_video(START_SEC)
+        if not ret:
+            print(f"ERROR: Cannot read frame at {START_SEC}s (~{_fmt_time(START_SEC)}).")
+            sys.exit(1)
+        dets = list_players_sorted(seed_frame)
+        if not dets:
+            print(f"ERROR: No players detected at {_fmt_time(START_SEC)}.")
+            print(f"  Run: python tracker.py --headless --video {VIDEO_PATH} --start {START_SEC} --list-players")
+            sys.exit(1)
+        if args.pick > len(dets):
+            print(f"ERROR: --pick {args.pick} out of range (1-{len(dets)} players detected).")
+            print(f"  Run --list-players to see numbered options.")
+            sys.exit(1)
+        init_bb = dets[args.pick - 1]
+        print(f"  Picked player #{args.pick}/{len(dets)}: bbox={init_bb}")
+        if DEBUG:
+            save_debug_frame(seed_frame, dets, output_dir / "debug_picked.jpg")
     else:
         ret, probe = seek_video(START_SEC)
         if not ret:
@@ -989,7 +1054,10 @@ while True:
         bb = cv2.selectROI(WIN, last, fromCenter=False, showCrosshair=True)
         if bb != (0, 0, 0, 0):
             init_tracking(last, bb)
-            print("  Player selected. Press K to save ref crops, SPACE to play.")
+            x, y, w, h = bb
+            print(f"  Player selected. bbox={x},{y},{w},{h}")
+            print(f"  RunPod copy-paste: --bbox {x},{y},{w},{h}")
+            print("  Press K to save ref crops, SPACE to play.")
         paused = False
     elif key == ord('k') or key == ord('K'):
         if state == "TRACKING" and box and HAS_GPT:
