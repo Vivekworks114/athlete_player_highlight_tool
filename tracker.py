@@ -74,6 +74,9 @@ parser.add_argument("--scan-seconds", type=int, default=15,
                     help="Headless: scan this many seconds forward to find players")
 parser.add_argument("--debug", action="store_true",
                     help="Save detection debug frames to output/")
+parser.add_argument("--highlight-mode", choices=["ball", "tracked", "both"],
+                    default="both",
+                    help="ball=touches only, tracked=while following player, both=either (default)")
 args = parser.parse_args()
 
 HEADLESS = args.headless
@@ -100,6 +103,7 @@ if not HEADLESS and (args.bbox or args.pos):
     parser.error("--bbox and --pos are only valid with --headless")
 
 DEBUG = args.debug
+HIGHLIGHT_MODE = args.highlight_mode
 
 _DIR = Path(__file__).resolve().parent
 VIDEO_PATH      = args.video
@@ -472,14 +476,16 @@ def pick_player_at_pos(frame, px, py):
     dets, _ = detect_players_multi_conf(frame)
     if not dets:
         return None, dets
-    best = None
-    best_dist = float("inf")
+    scored = []
     for d in dets:
         cx, cy = d[0] + d[2] / 2, d[1] + d[3] / 2
-        dist = (cx - px) ** 2 + (cy - py) ** 2
-        if dist < best_dist:
-            best_dist = dist
-            best = d
+        dist = float(np.hypot(cx - px, cy - py))
+        area = d[2] * d[3]
+        scored.append((dist, area, d))
+    scored.sort(key=lambda x: x[0])
+    min_dist = scored[0][0]
+    close = [s for s in scored if s[0] <= min_dist + 80]
+    _, _, best = max(close, key=lambda x: x[1])
     return best, dets
 
 def save_debug_frame(frame, dets, path, point=None):
@@ -568,9 +574,45 @@ recording = False; post_roll_countdown = 0
 clip_writer = None; clip_count = 0; clip_paths = []
 ball_involved = False
 end_frame = int((START_SEC + RUN_MINUTES * 60) * fps)
+stat_frames = 0
+stat_tracking = 0
+stat_ball_det = 0
+stat_ball_near = 0
 
 def set_center(b):
     return np.array([b[0]+b[2]/2.0, b[1]+b[3]/2.0])
+
+def start_highlight(reason):
+    global recording, clip_count, clip_writer, post_roll_countdown
+    if recording:
+        return
+    clip_count += 1
+    clip_path = str(output_dir / f"clip_{clip_count:03d}.mp4")
+    clip_paths.append(clip_path)
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    clip_writer = cv2.VideoWriter(clip_path, fourcc, fps, (W, H))
+    for buf_frame in pre_roll_buf:
+        clip_writer.write(buf_frame)
+    recording = True
+    post_roll_countdown = post_roll_frames
+    print(f"  HIGHLIGHT #{clip_count}: {reason} — recording...")
+
+def finish_highlight_if_done():
+    global recording, clip_writer
+    if recording and post_roll_countdown <= 0:
+        clip_writer.release()
+        clip_writer = None
+        recording = False
+        if clip_paths:
+            dur = os.path.getsize(clip_paths[-1]) / 1024
+            print(f"  HIGHLIGHT #{clip_count}: saved ({dur:.0f} KB)")
+
+def should_record_highlight(ball_touch, tracking_stable):
+    if HIGHLIGHT_MODE == "ball":
+        return ball_touch
+    if HIGHLIGHT_MODE == "tracked":
+        return tracking_stable
+    return ball_touch or tracking_stable
 
 def find_player_start(px, py):
     step = max(1, int(fps))
@@ -643,6 +685,7 @@ if HEADLESS:
     frame_no = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
     print(f"\nHeadless mode. Processing {RUN_MINUTES} min starting at {_fmt_time(actual_start)}.")
     print(f"  Player box: {init_bb}  jersey={PLAYER_JERSEY or '-'}  team={PLAYER_TEAM or '-'}")
+    print(f"  Highlight mode: {HIGHLIGHT_MODE}")
 else:
     print(f"\nReady. Processing {RUN_MINUTES} min starting at {START_SEC}s.")
     print("S=select player, K=save ref crop, SPACE=play, Q=quit.")
@@ -660,6 +703,10 @@ while True:
         if frame is None: break
 
     last = frame; H,W = frame.shape[:2]; disp = frame.copy()
+    if not paused:
+        stat_frames += 1
+        if state == "TRACKING":
+            stat_tracking += 1
 
     # ── Camera motion compensation (only when not actively tracking) ──
     if not paused and state in ("SEARCHING", "OFFSCREEN"):
@@ -846,7 +893,14 @@ while True:
     # ── Ball detection + highlight recording ──
     if state=="TRACKING" and box and not paused:
         balls = detect_ball(frame)
+        if balls:
+            stat_ball_det += 1
         ball_involved, closest_ball = ball_near_player(balls, box)
+        if ball_involved:
+            stat_ball_near += 1
+        tracking_stable = tracked >= max(1, int(fps * 0.5))
+        want_record = should_record_highlight(ball_involved, tracking_stable)
+
         for (bcx, bcy, bw, bh) in balls:
             ball_col = (0, 255, 255) if ball_involved else (200, 200, 200)
             cv2.circle(disp, (bcx, bcy), max(bw, bh)//2 + 4, ball_col, 2)
@@ -854,26 +908,16 @@ while True:
             cv2.putText(disp, "BALL", (box[0], box[1]+box[3]+20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,255), 2)
 
-        if ball_involved:
+        if want_record:
             if not recording:
-                clip_count += 1
-                clip_path = str(output_dir / f"clip_{clip_count:03d}.mp4")
-                clip_paths.append(clip_path)
-                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                clip_writer = cv2.VideoWriter(clip_path, fourcc, fps, (W, H))
-                for buf_frame in pre_roll_buf:
-                    clip_writer.write(buf_frame)
-                recording = True
-                print(f"  HIGHLIGHT #{clip_count}: ball touch! Recording...")
+                reason = "ball touch" if ball_involved else "player tracked"
+                start_highlight(reason)
             post_roll_countdown = post_roll_frames
             clip_writer.write(frame)
         elif recording:
             clip_writer.write(frame)
             post_roll_countdown -= 1
-            if post_roll_countdown <= 0:
-                clip_writer.release(); clip_writer = None; recording = False
-                dur = os.path.getsize(clip_paths[-1]) / 1024
-                print(f"  HIGHLIGHT #{clip_count}: saved ({dur:.0f} KB)")
+            finish_highlight_if_done()
 
         if not recording:
             pre_roll_buf.append(frame.copy())
@@ -882,8 +926,8 @@ while True:
     elif not paused and recording:
         clip_writer.write(frame)
         post_roll_countdown -= 1
-        if post_roll_countdown <= 0:
-            clip_writer.release(); clip_writer = None; recording = False
+        finish_highlight_if_done()
+        if not recording:
             print(f"  HIGHLIGHT #{clip_count}: saved (player lost during clip)")
 
     if recording:
@@ -962,11 +1006,21 @@ while True:
 # ── Cleanup + merge ──────────────────────────────────────────────────────────
 if clip_writer is not None:
     clip_writer.release()
+    clip_writer = None
+    recording = False
     print(f"  HIGHLIGHT #{clip_count}: saved (final clip)")
 
 cap.release()
 if not HEADLESS:
     cv2.destroyAllWindows()
+
+if stat_frames:
+    print(f"\n--- Run summary ---")
+    print(f"  Frames processed: {stat_frames}")
+    print(f"  Tracking active: {100 * stat_tracking / stat_frames:.0f}% of frames")
+    print(f"  Ball detected: {stat_ball_det} frames, near player: {stat_ball_near} frames")
+    print(f"  Highlight mode: {HIGHLIGHT_MODE}")
+    print(f"  Clips saved: {clip_count}")
 
 if clip_paths:
     output_path = str(output_dir / "highlight_reel.mp4")
@@ -1003,3 +1057,9 @@ if clip_paths:
     print(f"Done! {len(clip_paths)} clips -> {output_path} ({dur_s:.1f}s)")
 else:
     print("\nNo highlights recorded.")
+    if stat_tracking == 0:
+        print("  Player tracking never stayed active — try --bbox with exact player box.")
+    elif HIGHLIGHT_MODE == "ball" and stat_ball_near == 0:
+        print("  Ball never detected near player — retry with:")
+        print("    --highlight-mode tracked   (record while following player)")
+        print("    --ball-conf 0.05 --ball-near 250")
