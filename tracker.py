@@ -33,10 +33,19 @@ import cv2, torch
 import numpy as np
 import torch.nn as nn
 import torchvision.transforms as T
-import torchreid
 from ultralytics import YOLO
 from collections import deque
 from pathlib import Path
+
+try:
+    from torchreid.models import build_model as build_reid_model
+except ImportError:
+    print("ERROR: torchreid is not installed correctly.")
+    print("Do NOT use the PyPI 'torchreid' package — it is incompatible.")
+    print("Install the official source build instead:")
+    print("  pip uninstall torchreid -y")
+    print("  pip install git+https://github.com/KaiyangZhou/deep-person-reid.git")
+    sys.exit(1)
 
 # ── CLI args ──────────────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser(description="Player Highlight Tracker")
@@ -159,7 +168,7 @@ ball_yolo = YOLO(BALL_PATH)
 ball_yolo.to(DEVICE)
 
 print("Loading OSNet Re-ID (SoccerNet-pretrained)...")
-reid = torchreid.models.build_model('osnet_x1_0', num_classes=1000, pretrained=False)
+reid = build_reid_model('osnet_x1_0', num_classes=1000, pretrained=False)
 reid.classifier = nn.Identity()
 ckpt = torch.load(REID_MODEL_PATH, map_location=DEVICE, weights_only=False)
 sd = {k.replace('module.',''):v for k,v in ckpt['state_dict'].items() if 'classifier' not in k}

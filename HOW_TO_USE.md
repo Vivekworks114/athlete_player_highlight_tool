@@ -137,6 +137,31 @@ Key parameters at the top of `tracker.py`:
 | `COLOR_GATE` | `0.35` | Team color matching threshold — lower = stricter same-team filtering |
 | `REID_THRESHOLD` | `0.50` | Re-ID score needed to re-acquire player after loss |
 
+## Troubleshooting
+
+**`ModuleNotFoundError: gdown` / `tensorboard` / other torchreid import errors**
+
+You likely installed the wrong PyPI `torchreid` package. Replace it with the official build:
+
+```bash
+pip uninstall torchreid -y
+pip install -r requirements.txt
+```
+
+Or manually:
+
+```bash
+pip uninstall torchreid -y
+pip install gdown scipy Pillow
+pip install git+https://github.com/KaiyangZhou/deep-person-reid.git
+```
+
+Verify:
+
+```bash
+python -c "from torchreid.models import build_model; print('OK')"
+```
+
 ## Known Limitations
 
 - **Same-team player swaps** can happen during close crossings — the tracker uses Re-ID + team color but identical kits make same-team players hard to distinguish at 50-130px.

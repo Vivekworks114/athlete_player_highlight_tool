@@ -2,7 +2,10 @@ torch>=2.0
 torchvision>=0.15
 ultralytics>=8.0
 opencv-contrib-python>=4.8
-torchreid
 numpy
+scipy
+Pillow
+gdown
 openai>=1.0
 python-dotenv
+git+https://github.com/KaiyangZhou/deep-person-reid.git
