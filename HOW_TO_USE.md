@@ -64,9 +64,17 @@ No GUI required. Provide the player location at the `--start` frame using either
 python tracker.py --headless --video path/to/match.mp4 --start 1850 --duration 30 \
   --bbox 820,340,55,120 --jersey 10 --team red
 
-# Option B: pick nearest detected player to a pixel (e.g. frame center)
-python tracker.py --headless --video path/to/match.mp4 --start 1850 --duration 30 \
+# Option B: auto-pick player nearest frame center (best for most videos)
+python tracker.py --headless --video path/to/match.mp4 --start 0 --duration 30 \
+  --jersey 10 --team red
+
+# Option C: pick nearest player to a pixel (must match your video resolution!)
+python tracker.py --headless --video path/to/match.mp4 --start 0 --duration 30 \
   --pos 960,540 --jersey 10 --team red
+
+# If no players detected — lower threshold, skip intro, save debug frames
+python tracker.py --headless --video path/to/match.mp4 --start 0 --duration 5 \
+  --yolo-conf 0.05 --scan-seconds 30 --debug --jersey 10 --team red
 ```
 
 | Argument | Default | Description |
@@ -81,6 +89,11 @@ python tracker.py --headless --video path/to/match.mp4 --start 1850 --duration 3
 | `--jersey` | — | Jersey number (skips interactive prompt) |
 | `--team` | — | Team color (skips interactive prompt) |
 | `--progress-every` | `30` | Log progress every N seconds in headless mode |
+| `--yolo-conf` | `0.12` | Player detection confidence (try `0.05` if nothing found) |
+| `--ball-conf` | `0.20` | Ball detection confidence |
+| `--ball-near` | `100` | Pixel margin for ball-touch highlights |
+| `--scan-seconds` | `15` | Seconds to scan forward when seeking a player |
+| `--debug` | off | Save detection debug images to `output/` |
 
 In headless mode the tracker starts immediately and runs until the duration limit. Reference crops for GPT are saved automatically when an API key is set.
 
@@ -182,6 +195,32 @@ Verify:
 
 ```bash
 python -c "from torchreid.models import build_model; print('OK')"
+```
+
+**No players / no highlights detected**
+
+1. Use `--start 0` (not `1850`) unless your video is 30+ minutes long.
+2. Omit `--pos` to auto-use frame center, or set `--pos` to half your video width/height.
+3. Lower detection: `--yolo-conf 0.05 --ball-conf 0.10 --ball-near 150`
+4. Save debug frames: `--debug` → check `output/debug_*.jpg`
+5. If tracking works but `clips=0`, ball detection is missing — increase `--ball-near`
+
+Quick probe (prints frame size + player count):
+
+```bash
+python -c "
+import cv2
+from ultralytics import YOLO
+v='/workspace/match1.mp4'
+cap=cv2.VideoCapture(v)
+fps=cap.get(cv2.CAP_PROP_FPS) or 30
+cap.set(cv2.CAP_PROP_POS_FRAMES,0)
+ok,f=cap.read()
+print('Frame:', f.shape[1], 'x', f.shape[0])
+y=YOLO('models/yolo11m.pt')
+r=y.predict(f, classes=0, conf=0.05, verbose=False)
+print('Players found:', len(r[0].boxes))
+"
 ```
 
 ## Known Limitations

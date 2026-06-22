@@ -64,6 +64,16 @@ parser.add_argument("--jersey", default="", help="Jersey number (skips prompt)")
 parser.add_argument("--team", default="", help="Team color (skips prompt)")
 parser.add_argument("--progress-every", type=int, default=30,
                     help="Headless: log progress every N seconds")
+parser.add_argument("--yolo-conf", type=float, default=0.12,
+                    help="Player detection confidence (try 0.05 if no players found)")
+parser.add_argument("--ball-conf", type=float, default=0.20,
+                    help="Ball detection confidence")
+parser.add_argument("--ball-near", type=int, default=100,
+                    help="Pixel margin around player for ball-touch highlights")
+parser.add_argument("--scan-seconds", type=int, default=15,
+                    help="Headless: scan this many seconds forward to find players")
+parser.add_argument("--debug", action="store_true",
+                    help="Save detection debug frames to output/")
 args = parser.parse_args()
 
 HEADLESS = args.headless
@@ -86,10 +96,10 @@ def parse_bbox(s):
         parser.error("--bbox must be four integers: x,y,w,h (w and h > 0)")
     return tuple(parts)
 
-if HEADLESS and not args.bbox and not args.pos:
-    parser.error("--headless requires --bbox x,y,w,h or --pos x,y")
 if not HEADLESS and (args.bbox or args.pos):
     parser.error("--bbox and --pos are only valid with --headless")
+
+DEBUG = args.debug
 
 _DIR = Path(__file__).resolve().parent
 VIDEO_PATH      = args.video
@@ -102,7 +112,7 @@ START_SEC       = args.start
 RUN_MINUTES     = args.duration
 
 # ── Tracking config ───────────────────────────────────────────────────────────
-YOLO_CONF       = 0.12
+YOLO_CONF       = args.yolo_conf
 YOLO_IMGSZ      = 1920
 COLLISION_CHECK = 4
 OVERLAP_IOU     = 0.15
@@ -116,9 +126,10 @@ EDGE_MARGIN     = 45
 OFFSCREEN_MAX   = int(30 * 30)
 
 # ── Ball detection ──
-BALL_CONF       = 0.20
+BALL_CONF       = args.ball_conf
 BALL_IMGSZ      = 960
-BALL_NEAR       = 100
+BALL_NEAR       = args.ball_near
+SCAN_SECONDS    = args.scan_seconds
 
 # ── Highlight recording ──
 PRE_ROLL_SEC    = 3.0
@@ -217,9 +228,10 @@ def iou(a,b):
     inter=max(0,x2-x1)*max(0,y2-y1); union=aw*ah+bw*bh-inter
     return inter/union if union>0 else 0
 
-def detect(frame):
-    res = yolo.predict(frame, classes=0, conf=YOLO_CONF, imgsz=YOLO_IMGSZ,
-                       half=True, verbose=False)
+def detect(frame, conf=None):
+    c = YOLO_CONF if conf is None else conf
+    res = yolo.predict(frame, classes=0, conf=c, imgsz=YOLO_IMGSZ,
+                       half=(DEVICE == "cuda"), verbose=False)
     out=[]
     for r in res:
         for b in r.boxes:
@@ -227,9 +239,18 @@ def detect(frame):
             out.append((x1,y1,x2-x1,y2-y1))
     return out
 
+def detect_players_multi_conf(frame):
+    for c in [YOLO_CONF, max(0.08, YOLO_CONF * 0.66), 0.05]:
+        dets = detect(frame, conf=c)
+        if dets:
+            if c != YOLO_CONF:
+                print(f"  Found {len(dets)} player(s) at conf={c:.2f}")
+            return dets, c
+    return [], YOLO_CONF
+
 def detect_ball(frame):
     res = ball_yolo.predict(frame, conf=BALL_CONF, imgsz=BALL_IMGSZ,
-                            half=True, verbose=False)
+                            half=(DEVICE == "cuda"), verbose=False)
     best_ball = None
     best_conf = 0
     for r in res:
@@ -448,9 +469,9 @@ def init_tracking(frame, bb):
     target_hist = jersey_hist(frame, *bb)
 
 def pick_player_at_pos(frame, px, py):
-    dets = detect(frame)
+    dets, _ = detect_players_multi_conf(frame)
     if not dets:
-        return None
+        return None, dets
     best = None
     best_dist = float("inf")
     for d in dets:
@@ -459,7 +480,17 @@ def pick_player_at_pos(frame, px, py):
         if dist < best_dist:
             best_dist = dist
             best = d
-    return best
+    return best, dets
+
+def save_debug_frame(frame, dets, path, point=None):
+    dbg = frame.copy()
+    for d in dets:
+        x, y, w, h = d
+        cv2.rectangle(dbg, (x, y), (x + w, y + h), (0, 255, 0), 2)
+    if point:
+        cv2.drawMarker(dbg, point, (0, 0, 255), cv2.MARKER_CROSS, 20, 2)
+    cv2.imwrite(str(path), dbg)
+    print(f"  Debug frame saved: {path}")
 
 # ── Video setup ───────────────────────────────────────────────────────────────
 cap = cv2.VideoCapture(VIDEO_PATH)
@@ -541,28 +572,76 @@ end_frame = int((START_SEC + RUN_MINUTES * 60) * fps)
 def set_center(b):
     return np.array([b[0]+b[2]/2.0, b[1]+b[3]/2.0])
 
+def find_player_start(px, py):
+    step = max(1, int(fps))
+    max_steps = max(step, int(SCAN_SECONDS * fps))
+    for offset in range(0, max_steps + 1, step):
+        sec = START_SEC + offset / fps
+        ret, frame = seek_video(sec)
+        if not ret:
+            continue
+        bb, dets = pick_player_at_pos(frame, px, py)
+        if DEBUG:
+            save_debug_frame(frame, dets, output_dir / f"debug_scan_{int(sec)}s.jpg",
+                             point=(px, py))
+        if bb:
+            if offset > 0:
+                print(f"  No players at {_fmt_time(START_SEC)} — found at {_fmt_time(sec)}")
+            return frame, bb, sec, dets
+    return None, None, None, []
+
 if HEADLESS:
-    ret, seed_frame = seek_video(START_SEC)
-    if not ret:
-        print(f"ERROR: Cannot read frame at {START_SEC}s (~{_fmt_time(START_SEC)}).")
-        if duration_sec:
-            print(f"  Video duration is ~{_fmt_time(duration_sec)} ({duration_sec:.0f}s).")
-        print("  Try a smaller --start (e.g. --start 0) or check the video file/codec.")
-        sys.exit(1)
+    print(f"  Detection settings: yolo_conf={YOLO_CONF} ball_conf={BALL_CONF} "
+          f"ball_near={BALL_NEAR}px scan={SCAN_SECONDS}s")
+    actual_start = START_SEC
     if args.bbox:
-        init_bb = parse_bbox(args.bbox)
-    else:
-        px, py = parse_xy(args.pos, "--pos")
-        init_bb = pick_player_at_pos(seed_frame, px, py)
-        if init_bb is None:
-            print(f"ERROR: No players detected at --start frame near ({px}, {py})")
+        ret, seed_frame = seek_video(START_SEC)
+        if not ret:
+            print(f"ERROR: Cannot read frame at {START_SEC}s (~{_fmt_time(START_SEC)}).")
+            if duration_sec:
+                print(f"  Video duration is ~{_fmt_time(duration_sec)} ({duration_sec:.0f}s).")
             sys.exit(1)
-        print(f"  Auto-selected player box: {init_bb}")
+        init_bb = parse_bbox(args.bbox)
+        h, w = seed_frame.shape[:2]
+        if DEBUG:
+            save_debug_frame(seed_frame, [init_bb], output_dir / "debug_bbox.jpg")
+    else:
+        ret, probe = seek_video(START_SEC)
+        if not ret:
+            print(f"ERROR: Cannot read frame at {START_SEC}s (~{_fmt_time(START_SEC)}).")
+            if duration_sec:
+                print(f"  Video duration is ~{_fmt_time(duration_sec)} ({duration_sec:.0f}s).")
+            sys.exit(1)
+        h, w = probe.shape[:2]
+        if args.pos:
+            px, py = parse_xy(args.pos, "--pos")
+        else:
+            px, py = w // 2, h // 2
+            print(f"  No --pos given, using frame center ({px}, {py}) [{w}x{h}]")
+        if px < 0 or py < 0 or px >= w or py >= h:
+            print(f"WARNING: --pos ({px}, {py}) outside frame [{w}x{h}], using center instead")
+            px, py = w // 2, h // 2
+        seed_frame, init_bb, actual_start, dets = find_player_start(px, py)
+        if init_bb is None:
+            save_debug_frame(probe, [], output_dir / "debug_no_players.jpg", point=(px, py))
+            print(f"ERROR: No players detected in first {SCAN_SECONDS}s from {_fmt_time(START_SEC)}.")
+            print(f"  Frame size: {w}x{h}. Target point: ({px}, {py})")
+            print(f"  Saved {output_dir / 'debug_no_players.jpg'}")
+            print("  Try:")
+            print("    --start 0   (skip intro/title cards)")
+            print("    --yolo-conf 0.05   (small/distant players)")
+            print("    --debug   (save scan frames to output/)")
+            print("    --bbox x,y,w,h   (manual box if you know coordinates)")
+            sys.exit(1)
+        if DEBUG:
+            save_debug_frame(seed_frame, dets, output_dir / "debug_selected.jpg",
+                             point=(px, py))
+        print(f"  Auto-selected player box: {init_bb} ({len(dets)} player(s) in frame)")
     init_tracking(seed_frame, init_bb)
     save_ref_crop(seed_frame, init_bb)
     last = seed_frame
     frame_no = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
-    print(f"\nHeadless mode. Processing {RUN_MINUTES} min starting at {START_SEC}s.")
+    print(f"\nHeadless mode. Processing {RUN_MINUTES} min starting at {_fmt_time(actual_start)}.")
     print(f"  Player box: {init_bb}  jersey={PLAYER_JERSEY or '-'}  team={PLAYER_TEAM or '-'}")
 else:
     print(f"\nReady. Processing {RUN_MINUTES} min starting at {START_SEC}s.")
@@ -820,8 +899,13 @@ while True:
     if HEADLESS and not paused and frame_no - last_progress_frame >= PROGRESS_INTERVAL:
         elapsed_s = (frame_no / fps) - START_SEC if fps > 0 else 0
         remain_s = max(0, RUN_MINUTES * 60 - elapsed_s)
+        ball_flag = ""
+        if state == "TRACKING" and box:
+            balls = detect_ball(frame)
+            near, _ = ball_near_player(balls, box)
+            ball_flag = f" ball={'yes' if near else 'no'}"
         print(f"  [{int(elapsed_s // 60)}:{int(elapsed_s % 60):02d}] "
-              f"state={state} clips={clip_count} "
+              f"state={state} clips={clip_count}{ball_flag} "
               f"{int(remain_s // 60)}:{int(remain_s % 60):02d} left")
         last_progress_frame = frame_no
 
