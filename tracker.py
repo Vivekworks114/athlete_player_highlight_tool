@@ -469,7 +469,42 @@ if not cap.isOpened():
 
 total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 fps = cap.get(cv2.CAP_PROP_FPS) or 30
-cap.set(cv2.CAP_PROP_POS_FRAMES, int(START_SEC * fps))
+duration_sec = total / fps if fps > 0 and total > 0 else None
+start_frame = int(START_SEC * fps)
+
+def _fmt_time(sec):
+    sec = max(0, int(sec))
+    return f"{sec // 60}:{sec % 60:02d}"
+
+print(f"Video: {VIDEO_PATH}")
+print(f"  {total} frames @ {fps:.2f} fps", end="")
+if duration_sec:
+    print(f" (~{_fmt_time(duration_sec)}, {duration_sec:.0f}s total)")
+else:
+    print(" (duration unknown — frame count may be unreliable)")
+
+if total > 0 and start_frame >= total:
+    print(f"ERROR: --start {START_SEC}s (frame {start_frame}) is past end of video.")
+    if duration_sec:
+        print(f"  Video ends at ~{_fmt_time(duration_sec)} ({duration_sec:.0f}s).")
+    print(f"  Use a smaller --start, e.g. --start 0")
+    sys.exit(1)
+
+if duration_sec and START_SEC > duration_sec:
+    print(f"ERROR: --start {START_SEC}s exceeds video duration (~{duration_sec:.0f}s).")
+    print(f"  Use --start 0 or any value below {int(duration_sec)}.")
+    sys.exit(1)
+
+def seek_video(seconds):
+    frame_idx = int(seconds * fps)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+    ret, frame = cap.read()
+    if ret:
+        return ret, frame
+    cap.set(cv2.CAP_PROP_POS_MSEC, seconds * 1000)
+    return cap.read()
+
+cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
 WIN = "Player Highlight Tracker"
 if not HEADLESS:
@@ -507,9 +542,12 @@ def set_center(b):
     return np.array([b[0]+b[2]/2.0, b[1]+b[3]/2.0])
 
 if HEADLESS:
-    ret, seed_frame = cap.read()
+    ret, seed_frame = seek_video(START_SEC)
     if not ret:
-        print(f"ERROR: Cannot read frame at {START_SEC}s")
+        print(f"ERROR: Cannot read frame at {START_SEC}s (~{_fmt_time(START_SEC)}).")
+        if duration_sec:
+            print(f"  Video duration is ~{_fmt_time(duration_sec)} ({duration_sec:.0f}s).")
+        print("  Try a smaller --start (e.g. --start 0) or check the video file/codec.")
         sys.exit(1)
     if args.bbox:
         init_bb = parse_bbox(args.bbox)
