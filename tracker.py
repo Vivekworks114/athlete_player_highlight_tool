@@ -44,7 +44,8 @@ except ImportError:
     print("Do NOT use the PyPI 'torchreid' package — it is incompatible.")
     print("Install the official source build instead:")
     print("  pip uninstall torchreid -y")
-    print("  pip install git+https://github.com/KaiyangZhou/deep-person-reid.git")
+    print("  pip install -r requirements.txt")
+    print("  pip install --no-build-isolation -r requirements-reid.txt")
     sys.exit(1)
 
 # ── CLI args ──────────────────────────────────────────────────────────────────

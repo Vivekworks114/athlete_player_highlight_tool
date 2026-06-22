@@ -6,8 +6,18 @@ Generate per-player highlight reels from football match videos.
 
 ### 1. Install Python dependencies
 
+Install base packages first, then Re-ID (needs numpy in the environment before build):
+
 ```bash
+pip uninstall torchreid -y
 pip install -r requirements.txt
+pip install --no-build-isolation -r requirements-reid.txt
+```
+
+Verify Re-ID:
+
+```bash
+python -c "from torchreid.models import build_model; print('OK')"
 ```
 
 **Note:** Requires Python 3.10+ and a CUDA-capable GPU (tested on RTX 4070 Ti SUPER).
@@ -139,6 +149,22 @@ Key parameters at the top of `tracker.py`:
 
 ## Troubleshooting
 
+**`ModuleNotFoundError: No module named 'numpy'` when installing deep-person-reid**
+
+Install base deps first, then Re-ID with build isolation disabled:
+
+```bash
+pip install numpy Cython
+pip install --no-build-isolation git+https://github.com/KaiyangZhou/deep-person-reid.git
+```
+
+Or use the split requirements files:
+
+```bash
+pip install -r requirements.txt
+pip install --no-build-isolation -r requirements-reid.txt
+```
+
 **`ModuleNotFoundError: gdown` / `tensorboard` / other torchreid import errors**
 
 You likely installed the wrong PyPI `torchreid` package. Replace it with the official build:
@@ -146,14 +172,7 @@ You likely installed the wrong PyPI `torchreid` package. Replace it with the off
 ```bash
 pip uninstall torchreid -y
 pip install -r requirements.txt
-```
-
-Or manually:
-
-```bash
-pip uninstall torchreid -y
-pip install gdown scipy Pillow
-pip install git+https://github.com/KaiyangZhou/deep-person-reid.git
+pip install --no-build-isolation -r requirements-reid.txt
 ```
 
 Verify:
