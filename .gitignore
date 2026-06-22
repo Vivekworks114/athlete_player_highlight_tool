@@ -1,0 +1,15 @@
+# Model weights (download separately — see HOW_TO_USE.md)
+models/*.pt
+models/*.pth
+
+# Secrets and local output
+.env
+output/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.Python
+venv/
+.venv/
