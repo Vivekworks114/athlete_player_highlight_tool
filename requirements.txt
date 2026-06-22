@@ -7,5 +7,9 @@ Cython
 scipy
 Pillow
 gdown
+h5py
+six
+yacs
+tensorboard
 openai>=1.0
 python-dotenv

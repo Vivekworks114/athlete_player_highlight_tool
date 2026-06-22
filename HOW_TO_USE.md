@@ -151,16 +151,19 @@ Key parameters at the top of `tracker.py`:
 
 **`ModuleNotFoundError: No module named 'numpy'` when installing deep-person-reid**
 
-Install base deps first, then Re-ID with build isolation disabled:
+Install base deps first (includes numpy, Cython, tensorboard), then Re-ID:
 
 ```bash
-pip install numpy Cython
-pip install --no-build-isolation git+https://github.com/KaiyangZhou/deep-person-reid.git
+pip install -r requirements.txt
+pip install --no-build-isolation -r requirements-reid.txt
 ```
 
-Or use the split requirements files:
+**`ModuleNotFoundError: No module named 'tensorboard'` when installing deep-person-reid**
+
+Same fix — `tensorboard` must be installed before the Re-ID package (setup imports the full library):
 
 ```bash
+pip install tensorboard h5py six yacs
 pip install -r requirements.txt
 pip install --no-build-isolation -r requirements-reid.txt
 ```
